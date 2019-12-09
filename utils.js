@@ -951,7 +951,7 @@ const getApiDomainName = async (apig, domain) => {
   try {
     return apig.getDomainName({ domainName: domain }).promise()
   } catch (e) {
-    if (e.code === 'NotFoundException:') {
+    if (e.code === 'NotFoundException') {
       return null
     }
   }
