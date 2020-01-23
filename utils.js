@@ -328,20 +328,58 @@ const configureDnsForApigDomain = async (
 /**
  * Map API Gateway API to the created API Gateway Domain
  */
-const mapDomainToApi = async (apig, domain, apiId) => {
+const mapDomainToApi = async (apig, domain, apiId, that) => {
   try {
-    const params = {
-      domainName: domain,
-      restApiId: apiId,
-      basePath: '(none)',
-      stage: 'production'
+    const basePath = '(none)'
+    const stage = 'production'
+    const restApiId = apiId
+    const domainName = domain
+
+    let existingPathMapping
+    try {
+      existingPathMapping = await apig.getBasePathMapping({ basePath, domainName }).promise()
+    } catch (e) {
+      if (e.code !== 'NotFoundException') {
+        throw e
+      }
+      // Otherwise, this is fine
     }
-    // todo what if it already exists but for a different apiId
-    return apig.createBasePathMapping(params).promise()
+
+    if (!existingPathMapping) {
+      return apig
+        .createBasePathMapping({
+          domainName,
+          restApiId,
+          basePath,
+          stage
+        })
+        .promise()
+    }
+
+    if (existingPathMapping.restApiId !== restApiId) {
+      that.context.debug(
+        `Domain ${domainName} was already mapped to ${existingPathMapping.restApiId}: overriding with ${restApiId}.`
+      )
+
+      return apig
+        .updateBasePathMapping({
+          basePath,
+          domainName,
+          patchOperations: [
+            {
+              op: 'replace',
+              path: '/restapiId',
+              value: restApiId
+            }
+          ]
+        })
+        .promise()
+    }
+
   } catch (e) {
     if (e.code === 'TooManyRequestsException') {
       await utils.sleep(2000)
-      return mapDomainToApi(apig, domain, apiId)
+      return mapDomainToApi(apig, domain, apiId, that)
     }
     throw e
   }
@@ -357,7 +395,7 @@ const deployApiDomain = async (
 ) => {
   try {
     that.context.debug(`Mapping domain ${subdomain.domain} to API ID ${subdomain.apiId}`)
-    await mapDomainToApi(apig, subdomain.domain, subdomain.apiId)
+    await mapDomainToApi(apig, subdomain.domain, subdomain.apiId, that)
   } catch (e) {
     if (e.message === 'Invalid domain name identifier specified') {
       that.context.debug(`Domain ${subdomain.domain} not found in API Gateway. Creating...`)
@@ -376,13 +414,6 @@ const deployApiDomain = async (
 
       // retry domain deployment now that domain is created
       return deployApiDomain(apig, route53, subdomain, certificateArn, domainHostedZoneId, that)
-    }
-
-    if (e.message === 'Base path already exists for this domain name') {
-      that.context.debug(
-        `Domain ${subdomain.domain} is already mapped to API ID ${subdomain.apiId}.`
-      )
-      return
     }
     throw new Error(e)
   }
@@ -920,7 +951,7 @@ const getApiDomainName = async (apig, domain) => {
   try {
     return apig.getDomainName({ domainName: domain }).promise()
   } catch (e) {
-    if (e.code === 'NotFoundException:') {
+    if (e.code === 'NotFoundException') {
       return null
     }
   }
